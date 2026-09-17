@@ -1,37 +1,61 @@
-# Install (online machine)
+# Installation
 
-## 1. Python
+## Prerequisites
 
-Use Python **3.12** when possible (best wheel support for PyTorch / FAISS).
+- Python **3.11+** (use **3.12** on Windows when possible for better binary wheels)
+- `pip` / `venv`
+- Optional: NVIDIA drivers for CUDA acceleration
+
+## Create a virtual environment
 
 ```bash
 py -3.12 -m venv .venv
+
+# Windows
 .venv\Scripts\activate
+
+# Linux / macOS
+# source .venv/bin/activate
+
 python -m pip install -U pip setuptools wheel
 ```
 
-## 2. Package
+## Install the package
+
+Development install with tests and lint tools:
 
 ```bash
 pip install -e ".[dev]"
 ```
 
-Optional llama.cpp backend:
+Extras:
 
 ```bash
-pip install llama-cpp-python
+pip install -e ".[api]"          # FastAPI server
+pip install -e ".[embeddings]"   # sentence-transformers
+pip install -e ".[llm]"          # llama-cpp-python / Transformers
+pip install -e ".[training]"     # peft / datasets
+pip install -e ".[all]"          # all optional stacks
 ```
 
-On Windows, if the wheel build fails, install a prebuilt wheel matching your Python/CUDA version from the llama-cpp-python releases, or use the Transformers backend only.
+### llama-cpp-python on Windows
 
-## 3. Verify
+If building from source fails, install a matching prebuilt wheel from the
+[llama-cpp-python releases](https://github.com/abetlen/llama-cpp-python/releases),
+or use the Transformers backend only.
+
+## Verify
 
 ```bash
-offline-ai --workspace ./workspace doctor
+offline-ai --workspace ./workspace doctor --offline
 python -c "from offline_ai import LocalAI; print(LocalAI('./workspace').detect_hardware())"
 pytest
 ```
 
-## 4. Models
+## Models
 
-Download models **once** while online. See [OFFLINE_INSTALL.md](OFFLINE_INSTALL.md) and [models.yaml](models.yaml).
+Download embedding / LLM weights **once** while online and place them under the
+paths configured in [`models.yaml`](models.yaml).
+
+See [OFFLINE_INSTALL.md](OFFLINE_INSTALL.md) and
+[docs/offline_requirements.md](docs/offline_requirements.md).
