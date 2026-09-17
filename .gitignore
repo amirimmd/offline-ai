@@ -1,0 +1,52 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# Runtime workspace (regenerated locally)
+workspace/db/
+workspace/vectors/
+workspace/logs/
+workspace/models/
+workspace/adapters/
+workspace/training/
+workspace/backups/
+workspace/conversations/
+workspace/config/
+workspace/config.yaml
+workspace/models.yaml
+
+# Model weights / large binaries
+*.gguf
+*.bin
+*.safetensors
+*.pt
+*.pth
+*.onnx
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Env / secrets
+.env
+.env.*
+*.pem
+credentials.json

@@ -1,0 +1,42 @@
+# Behavior / policy memory — enforced by application code, not only prompts.
+
+citation_required: true
+allow_unsupported_claims: false
+preserve_original_documents: true
+if_evidence_missing: "UNKNOWN"
+insufficient_evidence_message: "Insufficient evidence in stored memory."
+
+grounding:
+  mode: strict
+  reject_unknown_citations: true
+  max_regeneration_attempts: 2
+  require_doc_id_in_citations: true
+
+source_priority:
+  - original
+  - official
+  - secondary
+  - social
+  - unknown
+
+# Priority affects ranking hints only — never treated as factual truth.
+source_priority_as_truth: false
+
+conversation:
+  auto_promote_to_long_term: false
+  require_explicit_promotion: true
+
+logging:
+  log_raw_document_text: false
+
+security:
+  allow_network: false
+  telemetry: false
+  hidden_downloads: false
+  validate_paths: true
+  sanitize_metadata: true
+
+duplicates:
+  keep_all_sources: true
+  link_similar_with: similar_to
+  link_exact_with: duplicate_of

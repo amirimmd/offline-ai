@@ -1,0 +1,7 @@
+[
+  {"text": "Company X announced that its VPN infrastructure was compromised on 2024-01-15.", "author": "intel_a", "created_at": "2024-01-16T10:00:00Z", "source": "tweet"},
+  {"text": "Threat actors used CVE-2024-12345 against Company X remote access.", "author": "intel_b", "created_at": "2024-01-16T11:00:00Z", "source": "tweet"},
+  {"text": "Phishing campaign targets banks in Germany this week.", "author": "osint1", "created_at": "2024-02-01T09:00:00Z", "source": "tweet"},
+  {"text": "Ransomware group claimed attack on Acme Corp payroll systems.", "author": "osint2", "created_at": "2024-02-03T12:00:00Z", "source": "tweet"},
+  {"text": "Unrelated: championship football match postponed due to weather.", "author": "sports", "created_at": "2024-02-04T08:00:00Z", "source": "tweet"}
+]

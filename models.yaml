@@ -1,0 +1,90 @@
+# Model registry — configure models here; do not hard-code in application logic.
+# All models must be available locally before going offline.
+
+defaults:
+  llm: qwen25-3b-instruct-gguf
+  embedding: multilingual-e5-base
+  reranker: msmarco-minilm-l6
+
+models:
+  qwen25-3b-instruct-gguf:
+    role: llm
+    backend: llama_cpp
+    family: Qwen2.5
+    display_name: Qwen2.5-3B-Instruct (GGUF Q4_K_M)
+    languages: [en, fa]
+    license: apache-2.0
+    context_length: 8192
+    quantization: Q4_K_M
+    # Place the GGUF file under workspace/models/ or set absolute path after download
+    local_path: models/llm/qwen2.5-3b-instruct-q4_k_m.gguf
+    download_hint: "Download Qwen2.5-3B-Instruct GGUF Q4_K_M once while online; see OFFLINE_INSTALL.md"
+    recommended_vram_mb: 3500
+    cpu_compatible: true
+
+  qwen25-7b-instruct-gguf:
+    role: llm
+    backend: llama_cpp
+    family: Qwen2.5
+    display_name: Qwen2.5-7B-Instruct (GGUF Q4_K_M)
+    languages: [en, fa]
+    license: apache-2.0
+    context_length: 8192
+    quantization: Q4_K_M
+    local_path: models/llm/qwen2.5-7b-instruct-q4_k_m.gguf
+    download_hint: "Download Qwen2.5-7B-Instruct GGUF Q4_K_M once while online"
+    recommended_vram_mb: 6000
+    cpu_compatible: true
+
+  qwen25-3b-instruct-hf:
+    role: llm
+    backend: transformers
+    family: Qwen2.5
+    display_name: Qwen2.5-3B-Instruct (Transformers)
+    languages: [en, fa]
+    license: apache-2.0
+    context_length: 8192
+    local_path: models/llm/Qwen2.5-3B-Instruct
+    download_hint: "huggingface-cli download Qwen/Qwen2.5-3B-Instruct --local-dir ..."
+    recommended_vram_mb: 7000
+    cpu_compatible: true
+    load_in_4bit: true
+
+  multilingual-e5-base:
+    role: embedding
+    backend: sentence_transformers
+    display_name: multilingual-e5-base
+    languages: [en, fa, multilingual]
+    license: mit
+    dimension: 768
+    local_path: models/embeddings/multilingual-e5-base
+    download_hint: "sentence-transformers/intfloat/multilingual-e5-base — download once"
+    query_prefix: "query: "
+    passage_prefix: "passage: "
+    recommended_vram_mb: 1000
+    cpu_compatible: true
+
+  msmarco-minilm-l6:
+    role: reranker
+    backend: cross_encoder
+    display_name: ms-marco-MiniLM-L-6-v2
+    local_path: models/reranker/ms-marco-MiniLM-L-6-v2
+    download_hint: "cross-encoder/ms-marco-MiniLM-L-6-v2 — download once"
+    recommended_vram_mb: 500
+    cpu_compatible: true
+    fallback: lexical_score
+
+hardware_profiles:
+  gpu_8gb:
+    llm: qwen25-3b-instruct-gguf
+    embedding: multilingual-e5-base
+    reranker: msmarco-minilm-l6
+    n_gpu_layers: -1
+    n_ctx: 4096
+  cpu:
+    llm: qwen25-3b-instruct-gguf
+    embedding: multilingual-e5-base
+    reranker: msmarco-minilm-l6
+    n_gpu_layers: 0
+    n_ctx: 2048
+    n_threads: auto

@@ -1,0 +1,58 @@
+# Offline AI — default workspace configuration
+# Paths are relative to the workspace root unless absolute.
+
+workspace:
+  name: offline_ai_workspace
+
+database:
+  filename: db/offline_ai.db
+  echo: false
+  foreign_keys: true
+
+vectors:
+  index_path: vectors/faiss.index
+  id_map_path: vectors/id_map.json
+  dimension: 768
+
+models:
+  config_file: models.yaml
+  cache_dir: models
+
+adapters:
+  root: adapters
+
+logging:
+  level: INFO
+  dir: logs
+  json: true
+  log_document_text: false
+
+retrieval:
+  weight_semantic: 0.45
+  weight_lexical: 0.30
+  weight_entity: 0.10
+  weight_metadata: 0.05
+  weight_graph: 0.10
+  top_k: 20
+  rerank_top_k: 8
+  min_evidence_score: 0.15
+
+chunking:
+  min_chars_for_chunking: 1200
+  chunk_size: 800
+  chunk_overlap: 120
+
+ingestion:
+  near_duplicate_threshold: 0.92
+
+hardware:
+  prefer_gpu: true
+  min_vram_mb_for_gpu: 4096
+
+api:
+  host: 127.0.0.1
+  port: 8765
+
+training:
+  replay_ratio: 0.3
+  replay_strategy: stratified
