@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -17,8 +17,22 @@ logger = get_logger(__name__)
 def make_engine(db_path: Path, *, echo: bool = False) -> Engine:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     url = f"sqlite:///{db_path.as_posix()}"
-    engine = create_engine(url, echo=echo, future=True)
+    engine = create_engine(
+        url,
+        echo=echo,
+        future=True,
+        connect_args={"check_same_thread": False, "timeout": 60},
+    )
     enable_sqlite_foreign_keys(engine)
+
+    @event.listens_for(engine, "connect")
+    def _set_sqlite_pragma(dbapi_connection, _connection_record) -> None:  # type: ignore[no-untyped-def]
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute("PRAGMA temp_store=MEMORY")
+        cursor.close()
+
     return engine
 
 

@@ -9,7 +9,8 @@ extension and testing.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from threading import Lock
+from typing import Any, Callable
 
 from offline_ai.core.config import Settings, load_settings
 from offline_ai.core.hardware import HardwareDetector, HardwareInfo, InferenceRecommendation
@@ -68,6 +69,10 @@ class LocalAI:
         self.evidence = None
         self.graph = None
         self.extractor = None
+        self._progress_cb: Callable[[str], None] | None = None
+        self._defer_vector_persist = False
+        self._indexed_since_flush = 0
+        self._op_lock = Lock()
 
         if init_db:
             self._init_persistence()
@@ -76,6 +81,28 @@ class LocalAI:
             "LocalAI initialized",
             extra={"event": "engine_init", "component": "engine"},
         )
+
+    def _report(self, stage: str) -> None:
+        cb = self._progress_cb
+        if cb is None:
+            return
+        try:
+            cb(stage)
+        except Exception:  # noqa: BLE001 - progress must never break ingest
+            logger.debug("progress callback failed", exc_info=True)
+
+    def _begin_bulk(self) -> None:
+        self._defer_vector_persist = True
+        self._indexed_since_flush = 0
+
+    def _end_bulk(self) -> None:
+        self._defer_vector_persist = False
+        self._indexed_since_flush = 0
+        if self.memory_manager is not None:
+            try:
+                self.memory_manager.flush_vectors_if_dirty()
+            except Exception:
+                logger.exception("Failed to flush vector index after bulk ingest")
 
     def _embedding_model_path(self) -> str | None:
         models = self.settings.models_raw.get("models") or {}
@@ -146,12 +173,28 @@ class LocalAI:
         )
 
         def _after(doc: Any, created: bool) -> None:
+            bulk = self._defer_vector_persist
             if not created:
+                if not bulk:
+                    self._report("سند تکراری بود — از حافظه موجود استفاده شد")
                 return
+            if not bulk:
+                self._report(f"ذخیره شد: {doc.document_id}")
             if self.auto_embed and self.memory_manager is not None:
-                self.memory_manager.index_document(doc.document_id)
+                if not bulk:
+                    self._report("ایندکس معنایی…")
+                self.memory_manager.index_document(doc.document_id, persist=not bulk)
+                if bulk:
+                    self._indexed_since_flush += 1
+                    if self._indexed_since_flush >= 100:
+                        self.memory_manager.persist_vectors()
+                        self._indexed_since_flush = 0
             if self.extractor is not None:
+                if not bulk:
+                    self._report("استخراج روابط و ادعاها…")
                 self.extractor.process_document(doc.document_id, doc.original_text)
+            if not bulk:
+                self._report(f"آماده: {doc.document_id}")
 
         self.ingestion = IngestionPipeline(self.db, self.raw_memory, after_document=_after)
 
@@ -221,6 +264,8 @@ class LocalAI:
         knowledge: str | list[str] | dict[str, Any] | list[dict[str, Any]],
         *,
         source: str = "manual",
+        on_progress: Callable[[str], None] | None = None,
+        split_lines: bool | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         """
@@ -229,12 +274,76 @@ class LocalAI:
         Accepts a string, a list of strings, a mapping with a ``text`` field,
         or a list of such mappings.
 
+        Multi-line strings with 2+ non-empty lines are stored as **one document
+        per line** (bulk mode) unless ``split_lines=False``.
+
+        ``on_progress`` receives short human-readable stage messages so UIs can
+        stay responsive without freezing.
+
         Examples:
             ai.add("Company X VPN was compromised.")
             ai.add(["fact one", "fact two"])
-            ai.add({"text": "...", "author": "alice", "source_url": "https://..."})
+            ai.add("line1\\nline2\\nline3")  # three documents
         """
         assert self.ingestion is not None
+        from offline_ai.ingestion.bulk import (
+            iter_line_items,
+            should_split_multiline,
+            split_text_to_lines,
+        )
+
+        def _progress_bridge(payload: dict[str, Any] | str) -> None:
+            if on_progress is None:
+                return
+            if isinstance(payload, str):
+                on_progress(payload)
+            else:
+                on_progress(str(payload.get("message") or payload))
+
+        # Bulk list of strings → stream as line items
+        if isinstance(knowledge, list) and knowledge and all(isinstance(x, str) for x in knowledge):
+            lines = [str(x).strip() for x in knowledge if str(x).strip()]
+            with self._op_lock:
+                self._progress_cb = on_progress
+                self._begin_bulk()
+                try:
+                    self._report(f"ذخیره دسته‌ای {len(lines):,} خط…")
+                    stats = self.ingestion.ingest_items(
+                        iter_line_items(lines, source=source),
+                        source_description=source,
+                        on_progress=lambda p: _progress_bridge(p),
+                        progress_every=max(25, min(200, len(lines) // 40 or 25)),
+                        total_hint=len(lines),
+                    )
+                    self._report("پردازش دانش تمام شد")
+                    return stats.to_dict()
+                finally:
+                    self._end_bulk()
+                    self._progress_cb = None
+
+        # Multi-line string → one document per line
+        if isinstance(knowledge, str):
+            do_split = should_split_multiline(knowledge) if split_lines is None else split_lines
+            if do_split:
+                lines = split_text_to_lines(knowledge)
+                with self._op_lock:
+                    self._progress_cb = on_progress
+                    self._begin_bulk()
+                    try:
+                        self._report(f"ذخیره دسته‌ای {len(lines):,} خط…")
+                        stats = self.ingestion.ingest_items(
+                            iter_line_items(lines, source=source),
+                            source_description=source,
+                            on_progress=lambda p: _progress_bridge(p),
+                            progress_every=max(25, min(200, len(lines) // 40 or 25)),
+                            total_hint=len(lines),
+                        )
+                        self._report("پردازش دانش تمام شد")
+                        return stats.to_dict()
+                    finally:
+                        self._end_bulk()
+                        self._progress_cb = None
+
         items: list[IngestItem] = []
 
         def _from_dict(obj: dict[str, Any]) -> IngestItem:
@@ -307,8 +416,33 @@ class LocalAI:
         else:
             raise TypeError("knowledge must be str, dict, or list")
 
-        stats = self.ingestion.ingest_items(items, source_description=source)
-        return stats.to_dict()
+        self._progress_cb = on_progress
+        try:
+            self._report("نوشتن در حافظه پایدار…")
+            use_bulk = len(items) > 1
+            if use_bulk:
+                self._begin_bulk()
+            try:
+                with self._op_lock:
+                    stats = self.ingestion.ingest_items(
+                        items,
+                        source_description=source,
+                        on_progress=lambda p: _progress_bridge(p),
+                        progress_every=1 if len(items) == 1 else 25,
+                        total_hint=len(items),
+                    )
+            finally:
+                if use_bulk:
+                    self._end_bulk()
+            added = int(stats.documents_added)
+            dupes = int(stats.duplicates)
+            if added == 0 and dupes > 0:
+                self._report("دانش تکراری بود — تغییری اعمال نشد")
+            else:
+                self._report("پردازش دانش تمام شد")
+            return stats.to_dict()
+        finally:
+            self._progress_cb = None
 
     def learn(
         self,
@@ -329,19 +463,58 @@ class LocalAI:
             text,
             source=source,
             metadata=metadata or {},
+            split_lines=False,
             **kwargs,
         )
 
     def ingest_tweets(self, tweets: list[dict] | list[str]) -> dict[str, Any]:
         assert self.ingestion is not None
         items = tweets_to_items(tweets)
-        stats = self.ingestion.ingest_items(items, source_description="tweets")
+        with self._op_lock:
+            self._begin_bulk()
+            try:
+                stats = self.ingestion.ingest_items(items, source_description="tweets")
+            finally:
+                self._end_bulk()
         return stats.to_dict()
 
-    def ingest_file(self, path: str | Path) -> dict[str, Any]:
+    def ingest_file(
+        self,
+        path: str | Path,
+        *,
+        on_progress: Callable[[str], None] | None = None,
+        text_column: str | None = None,
+        line_mode: bool | None = None,
+    ) -> dict[str, Any]:
+        """
+        Ingest a file into persistent memory.
+
+        Supported: ``.xlsx``, ``.csv``, ``.json``, ``.jsonl``, ``.txt``, ``.md``.
+        Large ``.txt`` files default to one document per non-empty line.
+        Excel: one row per document (first row = headers; prefer a ``text``/``متن`` column).
+        """
         assert self.ingestion is not None
-        stats = self.ingestion.ingest_file(Path(path))
-        return stats.to_dict()
+
+        def _bridge(payload: dict[str, Any]) -> None:
+            if on_progress is None:
+                return
+            on_progress(str(payload.get("message") or payload))
+
+        with self._op_lock:
+            self._progress_cb = on_progress
+            self._begin_bulk()
+            try:
+                stats = self.ingestion.ingest_file(
+                    Path(path),
+                    on_progress=_bridge if on_progress else None,
+                    text_column=text_column,
+                    line_mode=line_mode,
+                    progress_every=50,
+                )
+                return stats.to_dict()
+            finally:
+                self._end_bulk()
+                self._progress_cb = None
 
     def rebuild_knowledge(self) -> dict[str, int]:
         """

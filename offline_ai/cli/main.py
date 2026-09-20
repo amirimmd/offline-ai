@@ -73,12 +73,21 @@ def doctor_cmd(
 @app.command("ingest")
 def ingest_cmd(
     ctx: typer.Context,
-    path: Path = typer.Argument(..., help="File to ingest"),
+    path: Path = typer.Argument(..., help="File to ingest (.xlsx/.csv/.json/.jsonl/.txt/.md)"),
+    text_column: Optional[str] = typer.Option(
+        None,
+        "--text-column",
+        help="Excel/CSV column name for document text (default: text/متن/auto)",
+    ),
 ) -> None:
-    """Ingest a file (JSON/JSONL/CSV/TXT/MD)."""
+    """Ingest a file into persistent memory (supports large Excel / line dumps)."""
     ai = _ai(ctx.obj["workspace"])
-    stats = ai.ingest_file(path)
-    console.print(JSON(json.dumps(stats)))
+
+    def _prog(msg: str) -> None:
+        console.print(msg)
+
+    stats = ai.ingest_file(path, on_progress=_prog, text_column=text_column)
+    console.print(JSON(json.dumps(stats, ensure_ascii=False)))
 
 
 @app.command("search")

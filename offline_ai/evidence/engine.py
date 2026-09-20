@@ -23,6 +23,12 @@ from offline_ai.utils.persian import (
 
 logger = get_logger(__name__)
 
+# Keep prompts inside small GGUF context windows (often 2048–4096).
+_MAX_EVIDENCE_DOCS_NEURAL = 5
+_MAX_SPAN_CHARS = 360
+_MAX_RELATIONS_CHARS = 1200
+_MAX_CLAIMS_IN_PROMPT = 8
+
 
 class EvidenceEngine:
     def __init__(
@@ -50,6 +56,120 @@ class EvidenceEngine:
         self.rerank_top_k = rerank_top_k
         self.min_evidence_score = min_evidence_score
         self.relations = RelationStore(db)
+
+    def _context_limit(self) -> int:
+        for attr in ("n_ctx", "max_context", "context_length"):
+            val = getattr(self.llm, attr, None)
+            if isinstance(val, int) and val > 0:
+                return val
+        return 4096
+
+    @staticmethod
+    def _estimate_tokens(text: str) -> int:
+        # Conservative for Persian/English mix (llama.cpp counts can be stricter).
+        return max(1, (len(text or "") + 1) // 2)
+
+    @staticmethod
+    def _clip(text: str, limit: int = _MAX_SPAN_CHARS) -> str:
+        clean = " ".join((text or "").replace("\u200c", " ").split())
+        if len(clean) <= limit:
+            return clean
+        return clean[: limit - 1].rstrip() + "…"
+
+    def _pack_prompt_evidence(
+        self,
+        *,
+        query: str,
+        relations_block: str,
+        evidence_hits: list[dict[str, Any]],
+        claim_rows: list[dict[str, Any]],
+        completion_tokens: int,
+    ) -> tuple[str, list[str], list[str], list[str], int]:
+        """
+        Fit relations + evidence into the model context window.
+
+        Returns: relations_block, evidence_blocks, evidence_texts, doc_ids, safe_max_tokens
+        """
+        ctx = self._context_limit()
+        # Reserve system prompt + query + completion + safety margin
+        overhead = self._estimate_tokens(query) + 450
+        budget_tokens = max(256, ctx - completion_tokens - overhead)
+        budget_chars = budget_tokens * 2
+
+        rel = self._clip(relations_block or "", _MAX_RELATIONS_CHARS)
+        if claim_rows:
+            # Rebuild a short relations block from top claims
+            lines = []
+            for c in claim_rows[:_MAX_CLAIMS_IN_PROMPT]:
+                triple = c.get("triple") or f"{c.get('subject')} —[{c.get('predicate')}]→ {c.get('object')}"
+                did = c.get("document_id") or ""
+                lines.append(f"- {triple}" + (f" ({did})" if did else ""))
+            rel = self._clip("\n".join(lines), _MAX_RELATIONS_CHARS)
+
+        blocks: list[str] = []
+        texts: list[str] = []
+        doc_ids: list[str] = []
+        used = len(rel)
+        max_docs = _MAX_EVIDENCE_DOCS_NEURAL if self._is_neural_llm() else min(8, self.rerank_top_k)
+
+        for h in evidence_hits[:max_docs]:
+            did = h.get("document_id") or ""
+            raw = h.get("snippet") or h.get("text") or ""
+            # Prefer short snippet; never dump full multi-KB documents into the prompt.
+            span = self._clip(raw, _MAX_SPAN_CHARS)
+            if not span:
+                continue
+            block = f"[{did}] {span}"
+            if used + len(block) + 2 > budget_chars and blocks:
+                break
+            blocks.append(block)
+            texts.append(span)
+            if did:
+                doc_ids.append(did)
+            used += len(block) + 2
+
+        prompt_chars = used + len(query) + 800
+        prompt_tokens = self._estimate_tokens("x" * prompt_chars)
+        safe_max = max(64, min(completion_tokens, ctx - prompt_tokens - 32))
+        return rel, blocks, texts, doc_ids, safe_max
+
+    def _safe_chat(
+        self,
+        messages: list[LLMMessage],
+        *,
+        max_tokens: int,
+        temperature: float,
+    ) -> str:
+        """Call LLM with context-safe max_tokens; raise only unexpected errors."""
+        packed = "\n".join(m.content for m in messages)
+        safe = max(64, min(max_tokens, self._context_limit() - self._estimate_tokens(packed) - 32))
+        if safe < 64:
+            raise RuntimeError("Prompt too large for model context window")
+        result = self.llm.chat(messages, max_tokens=safe, temperature=temperature)
+        return (result.text or "").strip()
+
+    def _extractive_fallback(
+        self,
+        query: str,
+        *,
+        evidence_hits: list[dict[str, Any]],
+        missing_msg: str,
+    ) -> str:
+        from offline_ai.llm.grounded_qa import compose_grounded_answer
+
+        pairs: list[tuple[str, str]] = []
+        for h in evidence_hits[:12]:
+            did = str(h.get("document_id") or "")
+            text = self._clip(h.get("snippet") or h.get("text") or "", 500)
+            if did and text:
+                pairs.append((did, text))
+        if not pairs:
+            return missing_msg
+        try:
+            return compose_grounded_answer(query, pairs) or missing_msg
+        except Exception:
+            top_id, top_text = pairs[0]
+            return f"{top_text}\n[{top_id}]"
 
     @staticmethod
     def _format_relation_answer(hop: dict[str, Any]) -> str:
@@ -138,12 +258,12 @@ class EvidenceEngine:
                 f"EVIDENCE:\n" + "\n\n".join(evidence_blocks) + "\n\n"
                 "Write a deep, precise, professional answer."
             )
-        result = self.llm.chat(
+        result_text = self._safe_chat(
             [LLMMessage(role="system", content=system), LLMMessage(role="user", content=user)],
             max_tokens=max_tokens,
             temperature=temperature,
         )
-        return (result.text or "").strip()
+        return result_text
 
     def ask(self, query: str, **kwargs: Any) -> dict[str, Any]:
         missing_msg = (
@@ -151,7 +271,10 @@ class EvidenceEngine:
             if contains_persian(query)
             else self.policies.insufficient_evidence_message
         )
-        max_tokens = int(kwargs.get("max_tokens", 1024 if self._is_neural_llm() else 512))
+        # Keep completion small so prompt + answer fit in 4k context.
+        default_out = 384 if self._is_neural_llm() else 512
+        max_tokens = int(kwargs.get("max_tokens", default_out))
+        max_tokens = min(max_tokens, max(128, self._context_limit() // 8))
         temperature = float(kwargs.get("temperature", 0.05 if self._is_neural_llm() else 0.1))
 
         # Structured multi-hop from claim graph
@@ -200,17 +323,17 @@ class EvidenceEngine:
                 )
                 polish_user = (
                     f"سؤال:\n{query}\n\n"
-                    f"حقایق قطعی از گراف دانش:\n{base}\n\n"
+                    f"حقایق قطعی از گراف دانش:\n{self._clip(base, 1500)}\n\n"
                     "همین را عمیق و دقیق به فارسی بنویس؛ چیزی اختراع نکن."
                 )
-                polished = self.llm.chat(
+                polished = self._safe_chat(
                     [
                         LLMMessage(role="system", content=polish_system),
                         LLMMessage(role="user", content=polish_user),
                     ],
                     max_tokens=max_tokens,
                     temperature=temperature,
-                ).text.strip()
+                )
                 if doc_ids and not self.citations.extract_citation_ids(polished):
                     polished = polished.rstrip() + "\n" + " ".join(f"[{d}]" for d in doc_ids)
                 must = [hop.get("killer"), hop.get("victim"), hop.get("since")]
@@ -411,71 +534,90 @@ class EvidenceEngine:
                 grounded=False,
             )
 
-        evidence_blocks = []
-        evidence_texts = []
-        doc_ids = []
-        if claim_rows:
-            evidence_blocks.append(f"[CLAIMS] روابط ذخیره‌شده:\n{relations_block}")
-            evidence_texts.append(relations_block)
-        for h in evidence_hits[: max(self.rerank_top_k, 8)]:
-            did = h["document_id"]
-            text = h.get("text") or h.get("snippet") or ""
-            evidence_blocks.append(f"[{did}] {text}")
-            evidence_texts.append(text)
-            doc_ids.append(did)
+        rel_packed, evidence_blocks, evidence_texts, doc_ids, safe_max = self._pack_prompt_evidence(
+            query=query,
+            relations_block=relations_block,
+            evidence_hits=evidence_hits,
+            claim_rows=claim_rows,
+            completion_tokens=max_tokens,
+        )
+        max_tokens = safe_max
+        warnings_extra: list[str] = []
+        if len(evidence_hits) > len(doc_ids):
+            warnings_extra.append(
+                f"Truncated evidence to {len(doc_ids)} docs for model context ({self._context_limit()})"
+            )
 
-        if self._is_neural_llm():
-            answer_text = self._deep_synthesize(
-                query,
-                relations_block=relations_block,
-                evidence_blocks=[b for b in evidence_blocks if not b.startswith("[CLAIMS]")],
-                missing_msg=missing_msg,
-                max_tokens=max_tokens,
-                temperature=temperature,
+        answer_text = ""
+        try:
+            if self._is_neural_llm():
+                answer_text = self._deep_synthesize(
+                    query,
+                    relations_block=rel_packed,
+                    evidence_blocks=evidence_blocks,
+                    missing_msg=missing_msg,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                )
+            elif contains_persian(query):
+                system = (
+                    "تو یک تحلیل‌گر ارشد مبتنی بر شواهد هستی. فقط از شواهد و روابط ذخیره‌شده استفاده کن. "
+                    "نیت سؤال را بفهم و اگر لازم است چند سند/رابطه را به هم وصل کن. "
+                    "ساختار: ۱) جمله اول جواب مستقیم ۲) جزئیات مستند ۳) ارجاع [DOC-...]. "
+                    f"اگر شواهد کافی نیست دقیقاً بگو: {missing_msg}"
+                )
+                user = (
+                    "پاسخ حرفه‌ای و مستند به زبان فارسی بنویس.\n\nشواهد:\n"
+                    + (f"روابط:\n{rel_packed}\n\n" if rel_packed else "")
+                    + "\n\n".join(evidence_blocks)
+                    + f"\n\nQUESTION:\n{query}"
+                )
+                answer_text = self._safe_chat(
+                    [LLMMessage(role="system", content=system), LLMMessage(role="user", content=user)],
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                )
+            else:
+                system = (
+                    "You are a senior grounded analyst. Answer ONLY using evidence and stored relations. "
+                    f"If insufficient, say exactly: {self.policies.insufficient_evidence_message}"
+                )
+                user = (
+                    "EVIDENCE:\n"
+                    + (f"RELATIONS:\n{rel_packed}\n\n" if rel_packed else "")
+                    + "\n\n".join(evidence_blocks)
+                    + f"\n\nQUESTION:\n{query}"
+                )
+                answer_text = self._safe_chat(
+                    [LLMMessage(role="system", content=system), LLMMessage(role="user", content=user)],
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                )
+        except Exception as exc:
+            err = str(exc).lower()
+            logger.warning("LLM ask failed; using extractive fallback", exc_info=exc)
+            answer_text = self._extractive_fallback(
+                query, evidence_hits=evidence_hits, missing_msg=missing_msg
             )
-        elif contains_persian(query):
-            system = (
-                "تو یک تحلیل‌گر ارشد مبتنی بر شواهد هستی. فقط از شواهد و روابط ذخیره‌شده استفاده کن. "
-                "نیت سؤال را بفهم و اگر لازم است چند سند/رابطه را به هم وصل کن. "
-                "ساختار: ۱) جمله اول جواب مستقیم ۲) جزئیات مستند ۳) ارجاع [DOC-...]. "
-                f"اگر شواهد کافی نیست دقیقاً بگو: {missing_msg}"
+            warnings_extra.append(f"LLM fallback: {exc}" if "context" in err or "token" in err else "LLM fallback to extractive")
+
+        if not (answer_text or "").strip():
+            answer_text = self._extractive_fallback(
+                query, evidence_hits=evidence_hits, missing_msg=missing_msg
             )
-            user = (
-                "پاسخ حرفه‌ای و مستند به زبان فارسی بنویس.\n\nشواهد:\n"
-                + "\n\n".join(evidence_blocks)
-                + f"\n\nQUESTION:\n{query}"
-            )
-            answer_text = self.llm.chat(
-                [LLMMessage(role="system", content=system), LLMMessage(role="user", content=user)],
-                max_tokens=max_tokens,
-                temperature=temperature,
-            ).text.strip()
-        else:
-            system = (
-                "You are a senior grounded analyst. Answer ONLY using evidence and stored relations. "
-                f"If insufficient, say exactly: {self.policies.insufficient_evidence_message}"
-            )
-            user = (
-                "EVIDENCE:\n"
-                + "\n\n".join(evidence_blocks)
-                + f"\n\nQUESTION:\n{query}"
-            )
-            answer_text = self.llm.chat(
-                [LLMMessage(role="system", content=system), LLMMessage(role="user", content=user)],
-                max_tokens=max_tokens,
-                temperature=temperature,
-            ).text.strip()
+            warnings_extra.append("Empty LLM answer; extractive fallback")
 
         cited = self.citations.extract_citation_ids(answer_text)
         ok_cites, bad = self.citations.validate_answer_citations(answer_text)
         grounding = self.grounding.validate(
             answer_text,
-            evidence_texts=evidence_texts,
-            valid_citation_ids=doc_ids,
+            evidence_texts=evidence_texts or [h.get("snippet") or h.get("text") or "" for h in evidence_hits[:5]],
+            valid_citation_ids=doc_ids or [h["document_id"] for h in evidence_hits[:8]],
             cited_ids=cited,
             bad_citations=bad,
         )
         answer_text = grounding.answer
+        grounding.warnings.extend(warnings_extra)
         cited = self.citations.extract_citation_ids(answer_text)
         _, bad2 = self.citations.validate_answer_citations(answer_text)
         if bad2:
@@ -517,11 +659,11 @@ class EvidenceEngine:
             evidence=[
                 {
                     "document_id": h["document_id"],
-                    "span": (h.get("text") or h.get("snippet") or "")[:500],
+                    "span": self._clip(h.get("text") or h.get("snippet") or "", 500),
                     "score": h.get("rerank_score") or h.get("final_score"),
                     "why": h.get("why_retrieved"),
                 }
-                for h in evidence_hits
+                for h in evidence_hits[:12]
             ],
             retrieval=retrieval,
             warnings=grounding.warnings,

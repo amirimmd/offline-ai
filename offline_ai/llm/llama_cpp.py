@@ -88,13 +88,26 @@ class LlamaCppBackend(LLMBackend):
     ) -> LLMResult:
         self.load()
         assert self._llm is not None
+        # Cap completion so prompt + output stays inside n_ctx.
+        prompt_chars = sum(len(m.content or "") for m in messages)
+        prompt_tokens_est = max(1, prompt_chars // 2)
+        room = max(32, self.n_ctx - prompt_tokens_est - 64)
+        max_tokens = max(32, min(int(max_tokens), room))
         payload = [{"role": m.role, "content": m.content} for m in messages]
-        out = self._llm.create_chat_completion(
-            messages=payload,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            stop=stop,
-        )
+        try:
+            out = self._llm.create_chat_completion(
+                messages=payload,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                stop=stop,
+            )
+        except Exception as exc:
+            msg = str(exc)
+            if "context" in msg.lower() or "token" in msg.lower():
+                raise RuntimeError(
+                    f"Prompt too large for model context ({self.n_ctx}): {msg}"
+                ) from exc
+            raise
         text = out["choices"][0]["message"]["content"]
         return LLMResult(text=text or "", model=self.model_name, raw=out)
 

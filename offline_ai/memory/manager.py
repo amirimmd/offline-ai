@@ -42,6 +42,7 @@ class MemoryManager:
         self.retriever = HybridRetriever(
             db, embedder, vector_store, weights=retrieval_weights
         )
+        self._vectors_dirty = False
 
     @classmethod
     def create(
@@ -82,7 +83,7 @@ class MemoryManager:
             retrieval_weights=weights,
         )
 
-    def index_document(self, document_id: str) -> int:
+    def index_document(self, document_id: str, *, persist: bool = True) -> int:
         with self.db.session() as session:
             chunks = list(
                 session.execute(
@@ -98,11 +99,19 @@ class MemoryManager:
                 [c.text for c in chunks],
                 [c.document_id for c in chunks],
             )
-        self.persist_vectors()
+        if persist:
+            self.persist_vectors()
+        else:
+            self._vectors_dirty = True
         return n
 
     def persist_vectors(self) -> None:
         self.vector_store.save(self.index_path, self.id_map_path)
+        self._vectors_dirty = False
+
+    def flush_vectors_if_dirty(self) -> None:
+        if getattr(self, "_vectors_dirty", False):
+            self.persist_vectors()
 
     def search(self, query: str, **kwargs: Any) -> dict[str, Any]:
         return self.retriever.search(query, **kwargs).to_dict()
