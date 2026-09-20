@@ -6,10 +6,12 @@ import re
 from dataclasses import dataclass
 
 from offline_ai.extraction.entities import DATE_RE
+from offline_ai.utils.persian import JALALI_DATE_RE
 
 
 EVENT_VERBS = re.compile(
-    r"\b(attack|breach|compromise|leak|ransomware|outage|exploit|intrusion)\b",
+    r"(attack|breach|compromise|leak|ransomware|outage|exploit|intrusion|"
+    r"جلسه|دیدار|سفر|حمله|نفوذ|نشت|باج)",
     re.IGNORECASE,
 )
 
@@ -28,7 +30,7 @@ class EventExtractor:
         if not EVENT_VERBS.search(text):
             return events
         date = None
-        m = DATE_RE.search(text)
+        m = DATE_RE.search(text) or JALALI_DATE_RE.search(text)
         if m:
             date = m.group(0)
         # Use first sentence as description

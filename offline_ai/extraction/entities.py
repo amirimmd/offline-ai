@@ -1,12 +1,20 @@
-"""Local entity extraction (rule-based + patterns; no cloud NER)."""
+"""Local entity extraction for Persian and English text."""
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Iterable
 
 from offline_ai.utils.hashing import normalize_text
+from offline_ai.utils.persian import (
+    CITIES,
+    COUNTRIES,
+    JALALI_DATE_RE,
+    JALALI_MONTHS,
+    STOPWORDS,
+    extract_jalali_dates,
+    tokenize,
+)
 
 CVE_RE = re.compile(r"\bCVE-\d{4}-\d{4,7}\b", re.IGNORECASE)
 DATE_RE = re.compile(
@@ -14,7 +22,6 @@ DATE_RE = re.compile(
     r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4})\b",
     re.IGNORECASE,
 )
-# Capitalized multi-word orgs / people heuristics
 PROPER_RE = re.compile(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\b")
 TECH_KEYWORDS = {
     "vpn": "TECHNOLOGY",
@@ -24,8 +31,12 @@ TECH_KEYWORDS = {
     "firewall": "TECHNOLOGY",
     "zero-day": "VULNERABILITY",
     "0day": "VULNERABILITY",
+    "بدافزار": "MALWARE",
+    "باج‌افزار": "MALWARE",
+    "باج افزار": "MALWARE",
+    "فیشینگ": "TECHNOLOGY",
 }
-ORG_HINTS = ("inc", "corp", "ltd", "llc", "company", "bank", "university", "ministry")
+ORG_HINTS = ("inc", "corp", "ltd", "llc", "company", "bank", "university", "ministry", "شرکت", "بانک", "وزارت")
 COUNTRY_HINTS = {
     "iran": "COUNTRY",
     "usa": "COUNTRY",
@@ -36,6 +47,30 @@ COUNTRY_HINTS = {
     "germany": "COUNTRY",
     "france": "COUNTRY",
     "uk": "COUNTRY",
+    "spain": "COUNTRY",
+}
+NAME_SKIP = STOPWORDS | set(JALALI_MONTHS) | {
+    "رفت",
+    "رفته",
+    "داشت",
+    "داشته",
+    "جلسه",
+    "دیدار",
+    "سفر",
+    "اعلام",
+    "گزارش",
+    "قتل",
+    "رسوند",
+    "رساند",
+    "رسانده",
+    "کشت",
+    "کشته",
+    "پیدا",
+    "نکردیم",
+    "نشد",
+    "دیگر",
+    "تاریخ",
+    "بعد",
 }
 
 
@@ -77,25 +112,49 @@ class EntityExtractor:
         for m in DATE_RE.finditer(text):
             add(m.group(0), "DATE", 0.8, m.start(), m.end())
 
+        for phrase in extract_jalali_dates(text):
+            idx = text.find(phrase)
+            add(phrase, "DATE", 0.9, idx if idx >= 0 else None, (idx + len(phrase)) if idx >= 0 else None)
+
         lower = text.lower()
         for kw, etype in TECH_KEYWORDS.items():
             idx = lower.find(kw)
             if idx >= 0:
                 add(kw, etype, 0.7, idx, idx + len(kw))
 
-        for name, etype in COUNTRY_HINTS.items():
-            idx = lower.find(name)
+        for name, etype in {**COUNTRY_HINTS, **COUNTRIES, **CITIES}.items():
+            idx = text.find(name) if not name.isascii() else lower.find(name)
             if idx >= 0:
-                add(name.title() if name != "usa" else "USA", etype, 0.75, idx, idx + len(name))
+                display = name if not name.isascii() else (name.title() if name != "usa" else "USA")
+                add(display, etype, 0.8, idx, idx + len(name))
 
         for m in PROPER_RE.finditer(text):
             val = m.group(1)
             if val.lower() in {"the", "a", "an", "and", "or", "for", "with"}:
                 continue
             etype = "ORGANIZATION" if any(h in val.lower() for h in ORG_HINTS) else "PERSON"
-            # Prefer COMPANY when "Company X" style
             if val.lower().startswith("company "):
                 etype = "COMPANY"
             add(val, etype, 0.55, m.start(1), m.end(1))
+
+        tokens = tokenize(text)
+        claimed = {e.normalized_value for e in found}
+        i = 0
+        while i < len(tokens):
+            tok = tokens[i]
+            if tok.isdigit() or tok in NAME_SKIP or tok in COUNTRIES or tok in CITIES:
+                i += 1
+                continue
+            pair = f"{tok} {tokens[i + 1]}" if i + 1 < len(tokens) else ""
+            if pair and tokens[i + 1] not in NAME_SKIP and pair not in COUNTRIES:
+                if normalize_text(pair) not in claimed:
+                    add(pair, "PERSON", 0.62)
+                    claimed.add(normalize_text(pair))
+                    i += 2
+                    continue
+            if len(tok) >= 2 and normalize_text(tok) not in claimed:
+                add(tok, "PERSON", 0.58)
+                claimed.add(normalize_text(tok))
+            i += 1
 
         return found

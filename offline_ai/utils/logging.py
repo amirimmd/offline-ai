@@ -38,13 +38,15 @@ def setup_logging(
     log_dir: Path | None = None,
     json_logs: bool = True,
     name: str = "offline_ai",
+    console_level: str = "WARNING",
 ) -> logging.Logger:
     logger = logging.getLogger(name)
     logger.handlers.clear()
-    logger.setLevel(getattr(logging, level.upper(), logging.INFO))
+    logger.setLevel(logging.DEBUG)
     logger.propagate = False
 
     console = logging.StreamHandler(sys.stderr)
+    console.setLevel(getattr(logging, console_level.upper(), logging.WARNING))
     if json_logs:
         console.setFormatter(JsonFormatter())
     else:
@@ -56,6 +58,7 @@ def setup_logging(
     if log_dir is not None:
         log_dir.mkdir(parents=True, exist_ok=True)
         file_handler = logging.FileHandler(log_dir / "offline_ai.log", encoding="utf-8")
+        file_handler.setLevel(getattr(logging, level.upper(), logging.INFO))
         file_handler.setFormatter(JsonFormatter())
         logger.addHandler(file_handler)
 

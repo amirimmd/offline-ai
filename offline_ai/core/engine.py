@@ -19,6 +19,7 @@ from offline_ai.ingestion.tweets import tweets_to_items
 from offline_ai.memory.manager import MemoryManager
 from offline_ai.memory.raw import RawMemory
 from offline_ai.retrieval.hybrid import RetrievalWeights
+from offline_ai.utils.console import configure_stdio
 from offline_ai.utils.logging import get_logger, setup_logging
 from offline_ai.utils.paths import resolve_path
 
@@ -43,6 +44,7 @@ class LocalAI:
         auto_embed: bool = True,
     ) -> None:
         self.settings: Settings = load_settings(workspace, config_path=config_path)
+        configure_stdio()
         if auto_setup_logging:
             setup_logging(
                 level=self.settings.config.logging.level,
@@ -341,6 +343,15 @@ class LocalAI:
         stats = self.ingestion.ingest_file(Path(path))
         return stats.to_dict()
 
+    def rebuild_knowledge(self) -> dict[str, int]:
+        """
+        Re-extract entities, claims, and graph relationships from all documents.
+
+        Use after upgrading the relation engine so older workspaces get strong links.
+        """
+        assert self.extractor is not None
+        return self.extractor.reprocess_all()
+
     def get_document(self, document_id: str) -> dict[str, Any] | None:
         assert self.raw_memory is not None
         doc = self.raw_memory.get_document(document_id)
@@ -447,6 +458,8 @@ class LocalAI:
             "documents": doc_count,
             "vectors": self.vector_store.size if self.vector_store is not None else 0,
             "embedder": getattr(self.embedder, "model_name", None),
+            "llm": getattr(self.llm, "model_name", None),
+            "llm_deep": "extractive" not in str(getattr(self.llm, "model_name", "")).lower(),
             "components_ready": {
                 "db": self.db is not None,
                 "memory": self.memory_manager is not None,

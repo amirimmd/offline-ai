@@ -19,11 +19,17 @@ def parse_relative_date(text: str, *, now: datetime | None = None) -> tuple[date
     """
     now = now or datetime.now(timezone.utc)
     lower = text.lower()
-    if "last 30 days" in lower or "past 30 days" in lower:
+    if (
+        "last 30 days" in lower
+        or "past 30 days" in lower
+        or "۳۰ روز اخیر" in text
+        or "30 روز اخیر" in text
+        or "ماه گذشته" in text
+    ):
         return now - timedelta(days=30), now
-    if "last 7 days" in lower or "past week" in lower:
+    if "last 7 days" in lower or "past week" in lower or "هفته گذشته" in text or "۷ روز اخیر" in text:
         return now - timedelta(days=7), now
-    if "last 24 hours" in lower or "past day" in lower:
+    if "last 24 hours" in lower or "past day" in lower or "۲۴ ساعت" in text or "دیروز" in text:
         return now - timedelta(days=1), now
     return None, None
 

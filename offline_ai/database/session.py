@@ -33,7 +33,8 @@ def init_db(engine: Engine) -> None:
                     document_id UNINDEXED,
                     original_text,
                     source,
-                    author
+                    author,
+                    tokenize = "unicode61 remove_diacritics 2"
                 );
                 """
             )

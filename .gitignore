@@ -29,6 +29,7 @@ workspace/conversations/
 workspace/config/
 workspace/config.yaml
 workspace/models.yaml
+workspace/
 
 # Model weights / large binaries
 *.gguf
@@ -37,6 +38,11 @@ workspace/models.yaml
 *.pt
 *.pth
 *.onnx
+*.incomplete
+
+# Hugging Face / download caches
+**/.cache/
+**/huggingface/
 
 # IDE / OS
 .idea/

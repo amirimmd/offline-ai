@@ -25,33 +25,55 @@ def create_llm_backend(
 ) -> LLMBackend:
     models = models_raw.get("models") or {}
     defaults = models_raw.get("defaults") or {}
-    key = prefer_key or defaults.get("llm")
-    if key and key in models:
+    # Prefer explicit key, then yaml default, then deeper 7B before 3B.
+    candidates = []
+    for key in (
+        prefer_key,
+        defaults.get("llm"),
+        "qwen25-7b-instruct-gguf",
+        "qwen25-3b-instruct-gguf",
+        "qwen25-3b-instruct-hf",
+    ):
+        if key and key in models and key not in candidates:
+            candidates.append(key)
+
+    for key in candidates:
         cfg = models[key]
         local = resolve_path(workspace, cfg.get("local_path", ""))
         backend = cfg.get("backend")
-        if local.exists():
-            if backend == "llama_cpp":
-                from offline_ai.llm.llama_cpp import LlamaCppBackend
+        if not local.exists():
+            continue
+        if backend == "llama_cpp":
+            from offline_ai.llm.llama_cpp import LlamaCppBackend
 
-                return LlamaCppBackend(
-                    local,
-                    n_ctx=n_ctx,
-                    n_gpu_layers=n_gpu_layers if device == "cuda" else 0,
-                    n_threads=n_threads,
-                )
-            if backend == "transformers":
-                from offline_ai.llm.transformers_backend import TransformersBackend
-
-                return TransformersBackend(
-                    local,
-                    device=device,
-                    load_in_4bit=bool(cfg.get("load_in_4bit")),
-                    max_context=n_ctx,
-                )
-        else:
+            layers = n_gpu_layers if device == "cuda" else 0
             logger.info(
-                "Configured LLM path missing; using extractive grounded backend",
-                extra={"event": "llm_fallback", "component": "llm"},
+                "Using deep GGUF LLM",
+                extra={"event": "llm_select", "component": "llm", "model": key},
             )
+            return LlamaCppBackend(
+                local,
+                n_ctx=n_ctx,
+                n_gpu_layers=layers,
+                n_threads=n_threads,
+                chat_format=cfg.get("chat_format") or "chatml",
+            )
+        if backend == "transformers":
+            from offline_ai.llm.transformers_backend import TransformersBackend
+
+            logger.info(
+                "Using Transformers LLM",
+                extra={"event": "llm_select", "component": "llm", "model": key},
+            )
+            return TransformersBackend(
+                local,
+                device=device,
+                load_in_4bit=bool(cfg.get("load_in_4bit")),
+                max_context=n_ctx,
+            )
+
+    logger.info(
+        "Configured LLM path missing; using extractive grounded backend",
+        extra={"event": "llm_fallback", "component": "llm"},
+    )
     return ExtractiveLLMBackend()

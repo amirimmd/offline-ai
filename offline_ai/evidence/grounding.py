@@ -6,6 +6,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from offline_ai.utils.persian import contains_persian
+
 
 @dataclass
 class GroundingResult:
@@ -76,19 +78,28 @@ class GroundingValidator:
             )
 
         overlap = self._token_overlap(answer, " ".join(evidence_texts))
+        persian_insufficient = "شواهد کافی در حافظه"
         if overlap < self.min_overlap and not self.allow_unsupported_claims:
-            # If answer is the insufficient message, ok
-            if self.insufficient_message.lower() in answer.lower():
+            if (
+                self.insufficient_message.lower() in answer.lower()
+                or persian_insufficient in answer
+            ):
                 return GroundingResult(ok=True, answer=answer, warnings=warnings)
             warnings.append(f"Low lexical overlap with evidence ({overlap:.3f})")
             if not self.allow_unsupported_claims:
-                # Soft fail: rewrite to evidence summary rather than invent
+                # Soft fail only when answer barely touches evidence nouns.
                 bullets = []
                 for i, t in enumerate(evidence_texts[:5]):
                     cid = valid_citation_ids[i] if i < len(valid_citation_ids) else valid_citation_ids[0]
                     span = " ".join(t.split())[:200]
-                    bullets.append(f"- {span} [{cid}]")
-                answer = "Based on stored evidence:\n" + "\n".join(bullets)
+                    bullets.append(f"- {span}")
+                    bullets.append(f"  {cid}")
+                header = (
+                    "بر اساس شواهد ذخیره شده:"
+                    if contains_persian(" ".join(evidence_texts))
+                    else "Based on stored evidence:"
+                )
+                answer = header + "\n" + "\n".join(bullets)
                 warnings.append("Regenerated answer from evidence due to weak grounding")
 
         return GroundingResult(ok=True, answer=answer, warnings=warnings)

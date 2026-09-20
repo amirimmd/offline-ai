@@ -11,6 +11,8 @@ faiss-cpu>=1.8
 orjson>=3.10
 python-dateutil>=2.9
 filelock>=3.14
+python-bidi>=0.4.2
+arabic-reshaper>=3.0
 
 # Optional API
 fastapi>=0.111

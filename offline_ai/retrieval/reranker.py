@@ -6,6 +6,9 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 
+from offline_ai.utils.persian import content_tokens, token_overlap
+
+
 class Reranker(ABC):
     @abstractmethod
     def rerank(self, query: str, documents: list[dict[str, Any]], top_k: int | None = None) -> list[dict[str, Any]]:
@@ -18,13 +21,15 @@ class LexicalFallbackReranker(Reranker):
     def rerank(
         self, query: str, documents: list[dict[str, Any]], top_k: int | None = None
     ) -> list[dict[str, Any]]:
-        q_terms = {t.lower() for t in query.split() if len(t) > 2}
+        q_terms = content_tokens(query) or {t.lower() for t in query.split() if len(t) > 1}
         scored = []
         for d in documents:
-            text = (d.get("text") or d.get("snippet") or "").lower()
-            overlap = sum(1 for t in q_terms if t in text)
+            text = (d.get("text") or d.get("snippet") or "")
+            overlap = token_overlap(query, text) if content_tokens(query) else sum(
+                1 for t in q_terms if t in text.lower()
+            )
             base = float(d.get("final_score") or d.get("score") or 0.0)
-            scored.append({**d, "rerank_score": base + 0.2 * overlap, "term_overlap": overlap})
+            scored.append({**d, "rerank_score": base + 0.35 * overlap, "term_overlap": overlap})
         scored.sort(key=lambda x: (x["rerank_score"], x.get("term_overlap", 0)), reverse=True)
         if top_k is not None:
             scored = scored[:top_k]

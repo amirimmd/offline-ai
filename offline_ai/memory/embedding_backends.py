@@ -36,19 +36,25 @@ class HashingEmbeddingBackend(EmbeddingBackend):
 
     @property
     def model_name(self) -> str:
-        return f"hashing-ngram-v1-d{self._dim}"
+        return f"hashing-ngram-v2-d{self._dim}"
+
+    def _add_gram(self, vec: np.ndarray, gram: str, weight: float = 1.0) -> None:
+        h = hashlib.blake2b(gram.encode("utf-8"), digest_size=8).digest()
+        idx = int.from_bytes(h[:4], "little") % self._dim
+        sign = 1.0 if (h[4] % 2 == 0) else -1.0
+        vec[idx] += sign * weight
 
     def _vectorize(self, text: str) -> np.ndarray:
+        from offline_ai.utils.persian import normalize_persian, tokenize
+
         vec = np.zeros(self._dim, dtype=np.float32)
-        t = text.lower()
+        t = normalize_persian(text)
         lo, hi = self._ngram_range
         for n in range(lo, hi + 1):
             for i in range(max(0, len(t) - n + 1)):
-                gram = t[i : i + n]
-                h = hashlib.blake2b(gram.encode("utf-8"), digest_size=8).digest()
-                idx = int.from_bytes(h[:4], "little") % self._dim
-                sign = 1.0 if (h[4] % 2 == 0) else -1.0
-                vec[idx] += sign
+                self._add_gram(vec, t[i : i + n])
+        for tok in tokenize(t):
+            self._add_gram(vec, f"#tok:{tok}", weight=3.0)
         norm = np.linalg.norm(vec)
         if norm > 0:
             vec /= norm

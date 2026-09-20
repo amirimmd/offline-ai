@@ -26,6 +26,11 @@ RELATION_TYPES = {
     "similar_to",
     "duplicate_of",
     "reports_same_event_as",
+    "killed",
+    "missing_since",
+    "had_meeting",
+    "traveled_to",
+    "met_with",
 }
 
 

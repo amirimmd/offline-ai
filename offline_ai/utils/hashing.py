@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import re
-import unicodedata
 
 
 def sha256_text(text: str) -> str:
@@ -17,10 +15,9 @@ def sha256_bytes(data: bytes) -> str:
 
 def normalize_text(text: str) -> str:
     """Normalize for near-duplicate / normalized-hash comparison."""
-    text = unicodedata.normalize("NFKC", text)
-    text = text.lower().strip()
-    text = re.sub(r"\s+", " ", text)
-    return text
+    from offline_ai.utils.persian import normalize_persian
+
+    return normalize_persian(text)
 
 
 def content_hash(text: str) -> str:

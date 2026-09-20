@@ -277,6 +277,12 @@ class ClaimRepository:
             select(Claim).where(Claim.claim_id == claim_id)
         ).scalar_one_or_none()
 
+    def list_by_predicate(self, predicate: str, *, limit: int = 200) -> list[Claim]:
+        return list(
+            self.session.execute(
+                select(Claim).where(Claim.predicate == predicate).limit(limit)
+            ).scalars()
+        )
 
 class RelationshipRepository:
     def __init__(self, session: Session) -> None:

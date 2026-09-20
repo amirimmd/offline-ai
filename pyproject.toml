@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "offline-ai"
-version = "0.1.0"
+version = "0.2.0"
 description = "Production-grade fully offline AI system with persistent memory, hybrid retrieval, and grounded citations"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -24,6 +24,8 @@ dependencies = [
   "orjson>=3.10",
   "python-dateutil>=2.9",
   "filelock>=3.14",
+  "python-bidi>=0.4.2",
+  "arabic-reshaper>=3.0",
 ]
 
 [project.optional-dependencies]

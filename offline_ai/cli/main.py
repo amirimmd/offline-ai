@@ -88,11 +88,45 @@ def search_cmd(ctx: typer.Context, query: str = typer.Argument(...)) -> None:
     console.print(JSON(json.dumps(ai.search(query))))
 
 
-@app.command("ask")
-def ask_cmd(ctx: typer.Context, query: str = typer.Argument(...)) -> None:
-    """Grounded ask with citations."""
+@app.command("rebuild")
+def rebuild_cmd(ctx: typer.Context) -> None:
+    """Re-extract claims and relationships from all stored documents."""
     ai = _ai(ctx.obj["workspace"])
-    console.print(JSON(json.dumps(ai.ask(query))))
+    result = ai.rebuild_knowledge()
+    console.print(JSON(json.dumps(result, ensure_ascii=False)))
+
+
+@app.command("chat")
+def chat_cmd(
+    ctx: typer.Context,
+    cli: bool = typer.Option(False, "--cli", help="Use terminal loop instead of Persian window"),
+) -> None:
+    """Persian ask/add UI (window by default; --cli for terminal)."""
+    if cli:
+        from offline_ai.cli.repl import run_chat
+
+        run_chat(ctx.obj["workspace"])
+        return
+    from offline_ai.cli.persian_ui import run_persian_ui
+
+    run_persian_ui(ctx.obj["workspace"])
+
+
+@app.command("ask")
+def ask_cmd(
+    ctx: typer.Context,
+    query: str = typer.Argument(...),
+    json_out: bool = typer.Option(False, "--json", help="Print full JSON result"),
+) -> None:
+    """Grounded ask with citations."""
+    from offline_ai.utils.console import print_text
+
+    ai = _ai(ctx.obj["workspace"])
+    result = ai.ask(query)
+    if json_out:
+        console.print(JSON(json.dumps(result, ensure_ascii=False)))
+        return
+    print_text(str(result.get("answer") or ""))
 
 
 @app.command("document")
